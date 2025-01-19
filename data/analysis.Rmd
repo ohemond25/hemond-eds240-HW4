@@ -1,0 +1,1602 @@
+---
+title: "EcoApps Invited Analysis"
+author: "Danny Foster"
+date: '2022-08-24'
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r}
+knitr::opts_chunk$set(message = FALSE)
+```
+
+```{r}
+set.seed(110819)
+library(here)
+library(tidyverse)
+library(glmmTMB)
+library(DHARMa)
+
+
+
+treelist = readRDS(here::here('02-data', 
+                              '03-for_analysis',
+                              'treelist.rds'))
+
+fuels = readRDS(here::here('02-data', 
+                           '03-for_analysis',
+                           'fuels.rds'))
+
+understory = readRDS(here::here('02-data',
+                                '02-intermediate',
+                                'understory.rds'))
+
+always_trees_plots = readRDS(here::here('02-data',
+                                        '02-intermediate',
+                                        'always_trees_plots.rds'))
+
+growth_and_removals = 
+  readRDS(here::here('02-data',
+                     '03-for_analysis',
+                     'growth_and_removals_2003base.rds'))
+
+fvs = 
+  read.csv(here::here('02-data',
+                         '02-intermediate',
+                         'FVS_outputs.csv')) %>%
+  as_tibble() %>%
+  mutate(comp = factor(as.character(comp)),
+         treatment = 
+           factor(treatment, 
+                  levels = c('control', 'mech', 'burn', 'mechburn')),
+         timestep = 
+           factor(timestep,
+                  levels = c('pre_treatment', 'post_18')))
+
+sdi = 
+  read.csv(here::here('02-data',
+                      '02-intermediate',
+                      'BFRS_relative_sdi.csv')) %>%
+  as_tibble() %>%
+  mutate(comp = factor(gsub(plot_id, pattern = '-.*$', replacement = '')),
+         treatment = 
+           factor(treatment, 
+                  levels = c('control', 'mech', 'burn', 'mechburn')),
+         timestep = 
+           factor(timestep,
+                  levels = c('pre_treatment', 'post_18')))
+
+cc = 
+  readRDS(here::here('02-data',
+                     '03-for_analysis',
+                     'cc_2020.rds'))
+
+
+```
+
+
+# Growth and removals
+
+Using 2003 as a baseline, how does growth+removals (mech and mechburn) compare across treatments?
+
+Statistical analysis just looking at net change in basal area. Have a 
+figure breaking out growth, mortalities, and removals.
+
+
+### Data munging:
+
+```{r}
+
+net_ba_data = 
+  treelist %>%
+  filter(is.element(plot_id, always_trees_plots)) %>%
+  filter(is.element(timestep, c('post_1', 'post_18')) &
+           status == 'Live' &
+           dbh_cm >= 11.4) %>%
+  mutate(timestep = factor(timestep, levels = c('post_1', 'post_18'))) %>%
+  group_by(treatment, comp, plot_id, timestep) %>%
+  summarise(ba_m2ha = sum(ba_m2ha)) %>%
+  ungroup() %>%
+  complete(nesting(treatment, comp, plot_id),
+           timestep) %>%
+  mutate(ba_m2ha = ifelse(is.na(ba_m2ha),0,ba_m2ha)) %>%
+  pivot_wider(names_from = timestep,
+              values_from = ba_m2ha) %>%
+  mutate(delta_ba_m2ha = post_18-post_1,
+         delta_ba_m2hayr = delta_ba_m2ha/17)
+
+
+```
+
+### Data exploration:
+
+```{r}
+
+ggplot(net_ba_data,
+       aes(x = delta_ba_m2hayr))+
+  geom_histogram()
+
+ggplot(net_ba_data,
+       aes(x = delta_ba_m2hayr))+
+  geom_histogram()+
+  facet_grid(treatment~.)
+
+```
+
+#### Model fitting:
+
+```{r}
+net_ba_fit = 
+  glmmTMB(data = net_ba_data,
+          formula = delta_ba_m2hayr ~ treatment + (1|comp),
+          family = gaussian(),
+          dispformula = ~treatment)
+
+```
+
+#### Model validation:
+
+```{r}
+plot(simulateResiduals(net_ba_fit))
+```
+
+There are more outliers in the data (values outside the range of model simulated 
+values) than expected, which is probably due to the long left tail for the 
+mechburn responses. However, linear mixed effect models are robust to minor 
+violations of assumptions like this (Schielzeth 2020).
+
+#### Model results:
+
+```{r}
+summary(net_ba_fit)
+
+# apply bonferroni correction
+net_ba_results.mean = 
+  summary(net_ba_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(net_ba_fit)$coefficients$cond),
+         response = 'Delta BA 2003-2020',
+         distribution = 'Gaussian',
+         parameter = 'Mean',
+         link = 'Identity',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+
+net_ba_results.disp = 
+  summary(net_ba_fit)$coefficients$disp %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(net_ba_fit)$coefficients$cond),
+         response = 'Delta BA 2003-2020',
+         distribution = 'Gaussian',
+         parameter = 'Res. var.',
+         link = 'Log',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+
+net_ba_data %>%
+  group_by(treatment) %>%
+  summarise(delta_ba_m2hayr.mean = mean(delta_ba_m2hayr),
+            delta_ba_m2hayr.sd = sd(delta_ba_m2hayr)) %>%
+  ungroup()
+
+net_ba_results.mean
+net_ba_results.disp
+```
+
+#### Findings:
+
+  - Mean (SD) net BA change (2003-2020) in Control stands was 0.69 (0.63) m^2 / ha / yr.
+  - Net change was lower in Mech stands at 0.24 (0.61) m^2 / ha / year and in Fire stands at 0.15 (0.75) m^2 / ha / yr, but these were not significantly different from Control.
+  - Net change in Mech+Fire stands was significantly lower than Control stands at -0.35 (1.08) m^2 / ha / yr.
+  - Mechburn also had significantly higher within-compartment variation in BA change than Controls.
+
+#### Figure:
+
+```{r fig.height=4.5, fig.width=6.5}
+growth_and_removals_figure = 
+  ggplot()+
+  geom_col(
+    data = 
+      growth_and_removals %>%
+      left_join(
+        data.frame(
+          treatment = c('control', 'mech', 'burn', 'mechburn'),
+          Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                             levels = c('Control', 'Mech', 'Fire', 'Mech+Fire')))) %>%
+      left_join(
+        data.frame(
+          outcome = c('survival', 'mortality', 'removal'),
+          Change = factor(c('Growth', 'Mortality', 'Harvest'),
+                          levels = c('Growth', 'Mortality', 'Harvest')))) %>%
+      mutate(
+        delta = 
+          ifelse(outcome=='survival',
+                 ba_m2ha_2020-ba_m2ha_2003,
+                 -ba_m2ha_2003)
+      ) %>%
+      group_by(Treatment, comp, plot_id, Change) %>%
+      summarise(delta = sum(delta)) %>%
+      ungroup() %>%
+      complete(nesting(Treatment, comp, plot_id),
+               Change) %>%
+      mutate(delta = ifelse(is.na(delta),0,delta)) %>%
+      group_by(Treatment, comp, Change) %>%
+      summarise(delta = mean(delta)) %>%
+      ungroup() %>%
+      group_by(Treatment, Change) %>%
+      summarise(delta = mean(delta)) %>%
+      ungroup() %>%
+      mutate(delta_ba_m2hayr = delta/17),
+    aes(x = Treatment, y = delta_ba_m2hayr, fill = Change)
+          
+  ) +
+  scale_fill_viridis_d(option = 'B',
+                       begin = 0.35)+
+  theme_minimal()+
+  geom_point(
+    data = 
+      net_ba_data %>%
+      left_join(
+        data.frame(
+          treatment = c('control', 'mech', 'burn', 'mechburn'),
+          Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                             levels = c('Control', 'Mech', 'Fire', 'Mech+Fire')))) %>%
+      group_by(Treatment) %>%
+      summarise(delta = mean(delta_ba_m2hayr)) %>%
+      ungroup(),
+    aes(x = Treatment, y = delta),
+    size = 5,
+  ) +
+  geom_errorbar(
+    data = 
+      net_ba_data %>%
+      left_join(
+        data.frame(
+          treatment = c('control', 'mech', 'burn', 'mechburn'),
+          Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                             levels = c('Control', 'Mech', 'Fire', 'Mech+Fire')))) %>%
+      group_by(Treatment) %>%
+      summarise(delta_mean = mean(delta_ba_m2hayr),
+                delta_2se = 2*sd(delta_ba_m2hayr)/sqrt(n())) %>%
+      ungroup(),
+    aes(x = Treatment, ymin = delta_mean-delta_2se, ymax = delta_mean+delta_2se),
+    width = 0.25
+  )+
+  labs(x = 'Treatment', y = 'Change in BA 2003-2020 (m^2 / ha / yr)')
+
+growth_and_removals_figure
+
+
+```
+
+# Density of large trees
+
+Using Pre (2001) as a baseline, how has the density of large trees (>30 in dbh) changed to present in each of the treatments?
+
+## Data munging
+
+```{r}
+
+large_trees_data = 
+  treelist %>%
+  filter(is.element(plot_id, always_trees_plots)) %>%
+  filter(is.element(timestep, c('pre_treatment', 'post_18')) &
+           status == 'Live' &
+           dbh_cm > 30*2.54) %>%
+  group_by(treatment, comp, plot_id, timestep) %>%
+  summarise(tph = sum(tph),
+            count = n()) %>%
+  ungroup() %>%
+  right_join(
+    treelist %>%
+      filter(is.element(plot_id, always_trees_plots) &
+               is.element(timestep, c('pre_treatment', 'post_18'))) %>%
+      group_by(treatment, comp, plot_id, timestep) %>%
+      summarise() %>%
+      ungroup()
+  ) %>%
+  mutate(tph = ifelse(is.na(tph), 0, tph),
+         count = ifelse(is.na(count), 0, count))
+
+
+```
+
+## Data exploration
+
+```{r}
+ggplot(large_trees_data,
+       aes(x = count))+
+  geom_histogram()
+
+ggplot(large_trees_data,
+       aes(x = count))+
+  geom_histogram()+
+  facet_grid(treatment~timestep)
+
+```
+
+### Model fitting
+
+```{r}
+large_trees_fit = 
+  glmmTMB(
+    data = large_trees_data,
+    formula = count ~ treatment*timestep+(1|comp),
+    family = poisson()
+  )
+
+```
+
+### Model validation
+
+```{r}
+plot(simulateResiduals(large_trees_fit))
+```
+
+### Model results:
+
+Parameter values are on the scale of log(trees per plot)
+
+```{r}
+summary(large_trees_fit)
+
+large_trees_results.mean = 
+  summary(large_trees_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(large_trees_fit)$coefficients$cond),
+         response = 'Number of large trees',
+         distribution = 'Poisson',
+         parameter = 'Mean',
+         link = 'Log',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+
+large_trees_data %>%
+  group_by(treatment, timestep) %>%
+  summarise(tph.mean = mean(tph),
+            tph.sd = sd(tph)) %>%
+  ungroup()
+
+large_trees_results.mean
+```
+
+### Findings:
+
+  - There was a mean (SD) density of 18.0 (23.0) large trees per hectare on the Control stands in 2001.
+  - The mean density of large trees in 2001 was not significantly different from Control stands for the Mech stands at 19.4 (18.7), the Fire stands at 14.2 (17.3), or the Mech+Fire stands at 25.6 (24.9).
+  - The mean density of large trees increased to 38.6 (32.5) TPH in the Control stands by 2020, a change which was statistically significant.
+  - Fire-only stands accumulated large trees slightly faster than Control stands while Mech and Mech+Fire accumulated large trees slower than control stands, resulting in 2020 densities of 35.8 (25.8) for the Mech stands, 33.1 (27.2) for the Fire stands, and 25.6 (21.4) for the Mech+Fire stands. The Mech+burn 
+  stands accumulated large trees at a significantly lower rate than the Controls. 
+
+### Figure
+
+```{r fig.height=6.5, fig.width=6.5}
+large_trees_figure = 
+  ggplot(
+  data = large_trees_data %>%
+           left_join(
+             data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+                        Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                           levels = c('Control', 'Mech', 'Fire',
+                                                      'Mech+Fire')))) %>%
+           left_join(
+             data.frame(timestep = c('pre_treatment', 'post_18'),
+                        Timestep = 
+                          factor(c('Pre (2001)', 'Post-18 (2020)'),
+                                 levels = c('Pre (2001)', 'Post-18 (2020)')))
+           ),
+  aes(x = tph, fill = Treatment))+
+  geom_bar(position = position_dodge(), alpha = 0.75)+
+  facet_grid(Treatment~Timestep)+
+  theme_minimal()+
+  labs(x = 'TPH > 76.2 cm DBH', y = 'N plots')+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+
+large_trees_figure
+```
+
+# Density of snags
+
+Using PRE (2001) as a baseline, how has the density of snags (>12" dbh) 
+(or maybe different) changed to present in each of the treatments?
+
+```{r}
+snags_data = 
+  treelist %>%
+  filter(is.element(plot_id, always_trees_plots)) %>%
+  filter(is.element(timestep, c('pre_treatment', 'post_18')) &
+           status == 'Snag' &
+           dbh_cm > 12*2.54) %>%
+  group_by(treatment, comp, plot_id, timestep) %>%
+  summarise(tph = sum(tph),
+            count = n()) %>%
+  ungroup() %>%
+  right_join(
+    treelist %>%
+      filter(is.element(plot_id, always_trees_plots) &
+               is.element(timestep, c('pre_treatment', 'post_18'))) %>%
+      group_by(treatment, comp, plot_id, timestep) %>%
+      summarise() %>%
+      ungroup()
+  ) %>%
+  mutate(tph = ifelse(is.na(tph), 0, tph),
+         count = ifelse(is.na(count), 0, count))
+
+  
+```
+
+
+## Data exploration
+
+```{r}
+ggplot(snags_data,
+       aes(x = count))+
+  geom_histogram()
+
+ggplot(snags_data,
+       aes(x = count))+
+  geom_histogram()+
+  facet_grid(treatment~timestep)
+
+```
+
+### Model fitting
+
+```{r}
+snags_fit = 
+  glmmTMB(
+    data = snags_data,
+    formula = count ~ treatment*timestep+(1|comp),
+    family = nbinom1()
+  )
+
+```
+
+### Model validation
+
+```{r}
+plot(simulateResiduals(snags_fit))
+```
+
+### Model results
+
+Parameter values are on the scale of log(trees per plot). 
+
+```{r}
+summary(snags_fit)
+
+snags_results.mean = 
+  summary(snags_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(snags_fit)$coefficients$cond),
+         response = 'Number of large trees',
+         distribution = 'Negative binomial',
+         parameter = 'Mean',
+         link = 'Log',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+
+snags_data %>%
+  group_by(treatment, timestep) %>%
+  summarise(tph.mean = mean(tph),
+            tph.sd = sd(tph)) %>%
+  ungroup()
+
+snags_results.mean
+
+```
+
+### Findings
+
+  - Mean (SD) snag density in 2001 was 12.1 (17.7) TPH in Control stands, and was not significantly different in Mech stands at 15.5 (21.5), Fire stands at 8.4 (18.7), or Mech+Fire stands at 12.3 (19.0).
+  - Snag density in Control stands increased to 25.6 (34.6), though this change was not statistically significant.
+  - The change in snag density 2020 was not significantly different between any treatment and the Controls, with Mech stands falling to 10.7 (19.3) TPH, Fire stands increasing to 17.6 (21.50), and Mech+Fire stands increasing to 19.5 (26.4).
+  
+
+### Figure
+
+```{r fig.height=6.5, fig.width=6.5}
+snags_figure = 
+  ggplot(
+  data = snags_data %>%
+           left_join(
+             data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+                        Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                           levels = c('Control', 'Mech', 'Fire',
+                                                      'Mech+Fire')))) %>%
+           left_join(
+             data.frame(timestep = c('pre_treatment', 'post_18'),
+                        Timestep = 
+                          factor(c('Pre (2001)', 'Post-18 (2020)'),
+                                 levels = c('Pre (2001)', 'Post-18 (2020)')))
+           ),
+  aes(x = tph, fill = Treatment))+
+  geom_bar(position = position_dodge())+
+  facet_grid(Treatment~Timestep)+
+  theme_minimal()+
+  labs(x = 'Snags per hectare > 30.5 cm DBH', y = 'N plots')+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+
+snags_figure
+```
+
+
+# Coefficient of variation in relative density
+
+Using coefficient of variation in relative density, are there 
+differences in current variability in stand density across treatments?
+
+Looking at coefficient of variation is rough because it is a stand-level measure, 
+leaving us with just 3 observations per treatment, which is not enough to 
+determine signifcance for a non-parametric test required by a statistic like 
+coefficient of variation. Instead, I fit a model to the plot-level observations 
+of SDI and allow the residual variance (which represents heterogeneity across 
+plots within a compartment) to vary by treatment. 
+
+## Data munging
+```{r}
+
+sdi_data = 
+  sdi %>%
+  filter(timestep=='post_18') 
+
+sdi_cv_data = 
+  sdi %>%
+  filter(timestep=='post_18') %>%
+  group_by(timestep, treatment, comp) %>%
+  summarise(rel_sdi_cv = sd(rel_sdi)/mean(rel_sdi)) %>%
+  ungroup()
+```
+
+## Data exploration
+
+```{r}
+
+ggplot(sdi,
+       aes(y = rel_sdi, x = treatment))+
+  geom_jitter(alpha = 0.5, )
+
+ggplot(sdi_cv_data,
+       aes(y = rel_sdi_cv, x = treatment))+
+  geom_point()
+
+```
+
+It really doesn't look like there's any difference in variability across the 
+treatments. 
+
+### Model fitting
+
+```{r}
+
+
+sdi_fit = 
+  glmmTMB(data = sdi_data,
+          rel_sdi ~ treatment + (1|comp),
+          family = gaussian(),
+          dispformula = ~treatment)
+
+
+```
+
+
+### Model validation
+
+```{r}
+plot(simulateResiduals(sdi_fit))
+```
+
+
+### Model results:
+
+```{r}
+summary(sdi_fit)
+
+# apply bonferroni correction
+sdi_results.mean = 
+  summary(sdi_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(sdi_fit)$coefficients$cond),
+         response = 'SDI 2020',
+         distribution = 'Gaussian',
+         parameter = 'Mean',
+         link = 'Identity',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05 / 8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+sdi_results.disp = 
+  summary(sdi_fit)$coefficients$disp %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(sdi_fit)$coefficients$cond),
+         response = 'SDI 2020',
+         distribution = 'Gaussian',
+         parameter = 'Resid. var.',
+         link = 'Log',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05 / 8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+sdi_data %>%
+  group_by(treatment) %>%
+  summarise(sdi.mean = mean(rel_sdi),
+            sdi.sd = sd(rel_sdi)) %>%
+  ungroup()
+
+sdi_results.mean
+sdi_results.disp
+```
+
+### Findings
+
+  - Mean (SD) relative SDI in 2020 was 75.4 (20.7) on Control plots.
+  - Relative SDI in 2020 was significantly lower than Controls in all treatments, at 43.8 (15.3) for Mech plots, 51.1 (16.9) on Fire plots, and 33.8 (14.4) on Mech+Fire plots.
+  - Mech+burn compartments had significantly less within-compartment heterogeneity in SDI than 
+  did controls. 
+
+### Figure
+
+Not going to do a figure for this because information about the spread of 
+SDI within a treatment is shown well by the SDI figure Lex did.
+
+# Coefficient of variation in canopy cover
+
+Using coefficient of variation in canopy cover, are there differences in 
+current variability in canopy cover across treatments?
+
+As with SDI, I fit a model to the plot-level observations 
+of canopy cover and allow the residual variance (which represents heterogeneity across 
+plots within a compartment) to vary by treatment. 
+
+## Data munging
+
+```{r}
+
+cc = 
+  cc %>%
+  filter(!is.na(canopy)) %>%
+  mutate(comp = gsub(plot_id, pattern = '-.*$', replacement = '')) %>%
+  left_join(
+    fuels %>%
+      select(treatment, comp) %>%
+      group_by(treatment, comp) %>%
+      summarise() %>%
+      ungroup()
+  ) %>%
+  mutate(canopy_perc = canopy/100,
+         canopy_trans = 
+           (canopy_perc * (nrow(.)-1)+0.5)/nrow(.))
+
+
+```
+
+## Data exploration 
+
+```{r}
+
+cc %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = comp, fill = Treatment, y = canopy))+
+  geom_boxplot(alpha = 0.75)+
+  theme_minimal()+
+  facet_grid(.~Treatment, scales = 'free_x')+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(x = 'Compartment', y = 'Canopy cover (%)')
+
+cc %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = canopy, fill = Treatment))+
+  geom_histogram()+
+  theme_minimal()+
+  facet_grid(Treatment~.)+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(y = 'N plots', x = 'Canopy cover (%)')
+
+```
+
+### Model fitting
+
+```{r}
+cc_fit = 
+  glmmTMB(data = cc,
+          formula = canopy_trans~treatment+(1|comp),
+          family = beta_family(),
+          dispformula = ~treatment)
+
+```
+
+### Model validation
+
+```{r}
+plot(simulateResiduals(cc_fit))
+```
+
+Not perfect (outlier test was significant) but looks fine to me.
+
+### Model results
+
+```{r}
+summary(cc_fit)
+
+# apply bonferroni correction
+cc_results.mean = 
+  summary(cc_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(cc_fit)$coefficients$cond),
+         response = 'Canopy cover 2020',
+         distribution = 'Beta',
+         parameter = 'Mean',
+         link = 'Logit',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+cc_results.disp = 
+  summary(cc_fit)$coefficients$disp %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(cc_fit)$coefficients$cond),
+         response = 'Canopy cover 2020',
+         distribution = 'Beta',
+         parameter = 'Dispersion',
+         link = 'Log',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+cc %>%
+  group_by(treatment) %>%
+  summarise(cc.mean = mean(canopy),
+            cc.sd = sd(canopy)) %>%
+  ungroup()
+
+cc_results.mean
+cc_results.disp
+```
+
+### Findings
+
+  - Mean (SD) canopy cover was 76.9 (15.0) percent in 2020 for Control plots.
+  - Canopy cover was lower, but not significantly so, on both Mech plots at 58.8 (18.4) and the Fire plots at 59.0 (18.5).
+  - Canopy cover was significantly lower on Mech+Fire plots at 37.0 (20.6).
+  - There was not evidence that any treatment significantly affected the dispersion parameter (controlling heterogeneity across plots within a compartment).
+
+### Figure
+
+```{r fig.height=4.5, fig.width=6.5}
+cc_figure = 
+  cc %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = canopy, fill = Treatment))+
+  geom_histogram()+
+  theme_minimal()+
+  facet_grid(Treatment~.)+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(y = 'N plots', x = 'Canopy cover (%)')
+
+cc_figure_2 = 
+  cc %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(y= canopy, fill = Treatment, x = Treatment, color = Treatment))+
+  #geom_boxplot(width = 0.25, alpha = 0.75)+
+  geom_jitter(alpha = 0.5, width = 0.125, height = 0)+
+  geom_violin(width = 0.5, position = position_nudge(0.5), alpha = 0.75)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  scale_color_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(y = '2020 Canopy cover (%)')
+
+cc_figure_2
+
+```
+
+# Surface fuels
+
+Are there differences in current surface fuel loads (litter + 1-1000h) 
+across treatments?
+
+## Data munging
+
+```{r}
+
+surface_fuels_data = 
+  fuels %>%
+  mutate(surface_mgha = fines_mgha+x1000r_mgha+x1000s_mgha)  %>%
+  select(treatment, comp, timestep, plot_id, azimuth,
+         surface_mgha) %>%
+  filter(timestep=='post_18' & !is.na(surface_mgha) &  
+           is.element(plot_id, always_trees_plots)) %>%
+  group_by(treatment, comp, timestep, plot_id) %>%
+  summarise(surface_mgha = mean(surface_mgha, na.rm = TRUE)) %>% 
+  ungroup() %>%
+  mutate(log_surface_mgha = log(surface_mgha+min(surface_mgha[surface_mgha>0])))
+
+```
+## Data exploration
+
+```{r}
+surface_fuels_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = surface_mgha, fill = Treatment))+
+  geom_histogram()+
+  facet_grid(Treatment~.)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+surface_fuels_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = surface_mgha, fill = Treatment))+
+  geom_histogram()+
+  facet_grid(Treatment~.)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  scale_x_log10()
+
+surface_fuels_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(y = surface_mgha, fill = Treatment, x = Treatment))+
+  geom_boxplot()+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+
+```
+
+### Model fitting
+
+```{r}
+surface_fuels_fit = 
+  glmmTMB(data = 
+            surface_fuels_data,
+          log_surface_mgha ~ treatment + (1|comp),
+          family = gaussian())
+  
+
+```
+
+### Model validation
+
+```{r}
+plot(simulateResiduals(surface_fuels_fit))
+```
+
+### Model results
+
+```{r}
+summary(surface_fuels_fit)
+
+# apply bonferroni correction
+surface_fuels_results.mean = 
+  summary(surface_fuels_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(net_ba_fit)$coefficients$cond),
+         response = '(log) Surface fuels 2020',
+         distribution = 'Gaussian',
+         parameter = 'Mean',
+         link = 'Identity',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/4,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+
+surface_fuels_data %>%
+  group_by(treatment) %>%
+  summarise(surface_mgha.mean = mean(surface_mgha),
+            surface_mgha.sd = sd(surface_mgha)) %>%
+  ungroup()
+
+surface_fuels_results.mean
+
+```
+
+### Findings
+
+  - Mean (SD) surface fuel loads on Control plots was 84.9 (60.5) Mg / ha.
+  - Surface fuel loads on Mech plots was lower, at 69.9 (52.2), though this difference with controls was not significant. and 49.0 (41.4), respectively, though neither had a significant difference from the Control plots.
+  - Surface fuel loads on Fire plots and Mech+Fire plots were significantly lower than on Control plots, at 49.0 (41.4) and 32.2 (25.6) Mg / ha, respectively. 
+
+### Figure
+
+```{r fig.height=4.5, fig.width=6.5}
+surface_fuels_figure = 
+  surface_fuels_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(y = surface_mgha, fill = Treatment, x = Treatment))+
+  geom_boxplot(alpha = 0.75)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  #scale_y_log10()+
+  labs(x = 'Treatment', y = '2020 surface fuel load (Mg / ha)')
+
+
+surface_fuels_figure_2 = 
+  surface_fuels_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(y= surface_mgha, fill = Treatment, x = Treatment, color = Treatment))+
+  #geom_boxplot(width = 0.25, alpha = 0.75)+
+  geom_jitter(alpha = 0.5, width = 0.125, height = 0)+
+  geom_violin(width = 0.5, position = position_nudge(0.5), alpha = 0.75)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  scale_color_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(y = '2020 surface fuel load (Mg / ha)')
+
+surface_fuels_figure_2
+
+```
+
+# Duff
+
+Same for duff.
+
+## Data munging
+
+```{r}
+duff_data = 
+  fuels %>%
+  select(treatment, comp, timestep, plot_id, azimuth,
+         duff_mgha) %>%
+  filter(timestep=='post_18' & !is.na(duff_mgha) &  
+           is.element(plot_id, always_trees_plots)) %>%
+  group_by(treatment, comp, timestep, plot_id) %>%
+  summarise(duff_mgha = mean(duff_mgha, na.rm = TRUE)) %>% 
+  ungroup() %>%
+  mutate(log_duff_mgha = log(duff_mgha+min(duff_mgha[duff_mgha>0])))
+
+```
+
+## Data exploration
+
+```{r}
+duff_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = duff_mgha, fill = Treatment))+
+  geom_histogram()+
+  facet_grid(Treatment~.)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+duff_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = log_duff_mgha, fill = Treatment))+
+  geom_histogram()+
+  facet_grid(Treatment~.)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+
+```
+
+
+### Model fitting
+
+```{r}
+duff_fit = 
+  glmmTMB(data = duff_data,
+          formula = duff_mgha ~ treatment+(1|comp),
+          family = tweedie(),
+          dispformula = ~treatment)
+
+```
+
+
+### Model validation
+
+```{r}
+plot(simulateResiduals(duff_fit))
+```
+
+### Model results:
+
+```{r}
+summary(duff_fit)
+
+# apply bonferroni correction
+duff_results.mean = 
+  summary(duff_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(duff_fit)$coefficients$cond),
+         response = 'Duff 2020',
+         distribution = 'Tweedie',
+         parameter = 'Mean',
+         link = 'Log',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+duff_results.disp = 
+  summary(duff_fit)$coefficients$disp %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(duff_fit)$coefficients$disp),
+         response = 'Duff 2020',
+         distribution = 'Tweedie',
+         parameter = 'Dispersion',
+         link = 'Log',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+
+duff_data %>%
+  group_by(treatment) %>%
+  summarise(duff_mgha.mean = mean(duff_mgha),
+            duff_mgha.sd = sd(duff_mgha)) %>%
+  ungroup()
+
+duff_results.mean
+duff_results.disp
+
+```
+
+### Findings
+
+  - Mean (SD) duff fuel loads on control plots was 61.7 (38.3) Mg / ha. 
+  - Duff fuel loads were lower in Mech units at 51.0 (37.7) Mg / ha, but this difference was not statistically significant.
+  - On the Fire and Mech+Fire plots, duff fuel loads were significantly lower at 11.1 (11.2) and 13.8 (25.1) Mg / ha, respectively.
+  - Within-compartment heterogeneity in duff fuel loads was significantly higher in Mech+Fire stands than in Control stands.
+  
+### Figure
+
+```{r fig.height=4.5, fig.width=6.5}
+duff_figure = 
+  duff_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = Treatment, fill = Treatment, y = duff_mgha))+
+  geom_boxplot(alpha = 0.75)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(x = 'Treatment', y = '2020 duff load (Mg/ha)')
+  
+
+
+duff_figure_2 = 
+  duff_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(y= duff_mgha, fill = Treatment, x = Treatment, color = Treatment))+
+  #geom_boxplot(width = 0.25, alpha = 0.75)+
+  geom_jitter(alpha = 0.5, width = 0.125, height = 0)+
+  geom_violin(width = 0.5, position = position_nudge(0.5), alpha = 0.75)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  scale_color_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(y = '2020 duff load (Mg / ha)')
+
+duff_figure_2
+
+```
+
+
+# Ptorch
+
+Are there differences in current P-torch values across treatments?
+
+## Data munging
+
+```{r}
+ptorch_data = 
+  fvs %>%
+  filter(timestep == 'post_18') %>%
+  mutate(ptorch = ptorch/100,
+         ptorch_transformed = 
+           ifelse(ptorch==1,0.99,ptorch))
+
+```
+
+## Data exploration
+
+```{r}
+ptorch_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = ptorch_transformed, fill = Treatment))+
+  geom_histogram()+
+  facet_grid(Treatment~.)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+```
+
+### Model fitting
+
+```{r}
+ptorch_fit = 
+  glmmTMB(data = ptorch_data,
+          formula = ptorch_transformed ~ treatment + (1|comp),
+          family = beta_family(),
+          ziformula = ~treatment)
+
+```
+
+### Model validation
+
+```{r}
+plot(simulateResiduals(ptorch_fit))
+```
+
+### Model results
+
+```{r}
+summary(ptorch_fit)
+
+ptorch_results.mean = 
+  summary(ptorch_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(ptorch_fit)$coefficients$cond),
+         response = 'PTorch 2020',
+         distribution = 'Beta',
+         parameter = 'Mean',
+         link = 'Logit',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+ptorch_results.zi = 
+  summary(ptorch_fit)$coefficients$zi %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(ptorch_fit)$coefficients$zi),
+         response = 'PTorch 2020',
+         distribution = 'Beta',
+         parameter = 'Zero inflation',
+         link = 'Logit',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+
+ptorch_data %>%
+  group_by(treatment) %>%
+  summarise(proportion_0 = sum(ptorch==0)/n(),
+            ptorch_nonzero.mean = mean(ptorch[ptorch>0]),
+            ptorch_nonzero.sd = sd(ptorch[ptorch>0])) %>%
+  ungroup()
+
+ptorch_results.mean
+ptorch_results.zi
+
+```
+
+### Findings
+
+  - Modeled PTorch was equal to 0 on 12.7 percent of control plots, 39.2 percent of Mech plots, 55.9 percent of Fire plots, and 87.0 percent of Mech+Fire plots. Plots from all three treatments had a significantly higher probability of having 0 PTorch. 
+  - Of plots where PTorch was greater than 0, the mean (SD) PTorch was 0.75 (0.34) on the Control plots, 0.36 (0.36) on the Mech plots, 0.56 (0.36) on the Fire plots, and 0.16 (0.15) on the Mech+Fire plots. Both Mech and Mech+Fire plots had significantly lower levels of PTorch on plots where PTorch was greater than 0.
+
+### Figure
+
+```{r fig.height=4.5, fig.width=6.5}
+ptorch_figure = 
+  ptorch_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(x = ptorch_transformed, fill = Treatment))+
+  geom_histogram()+
+  facet_grid(Treatment~.)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(x = 'PTorch', y = 'Number of plots')
+
+
+ptorch_figure_2 = 
+  ptorch_data  %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  ggplot(aes(y= ptorch, fill = Treatment, x = Treatment, color = Treatment))+
+  #geom_boxplot(width = 0.25, alpha = 0.75)+
+  geom_jitter(alpha = 0.5, width = 0.125, height = 0)+
+  geom_violin(width = 0.5, position = position_nudge(0.5), alpha = 0.75)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  scale_color_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(y = '2020 PTorch')
+
+ptorch_figure_2
+```
+
+# Stable aboveground live biomass
+
+Are there differences in current stable aboveground live biomass across 
+treatments?
+
+## Data munging
+
+```{r}
+sltc_data = 
+  treelist %>%
+  filter(timestep=='post_18' & status == 'Live' & is.element(plot_id, always_trees_plots)) %>%
+  group_by(treatment, comp, plot_id) %>%
+  summarise(carbon_mgha = sum(carbon_mgha)) %>%
+  ungroup() %>%
+  right_join(treelist %>%
+               group_by(treatment, comp, plot_id) %>%
+               summarise() %>%
+               ungroup()) %>%
+  mutate(carbon_mgha = ifelse(is.na(carbon_mgha), 0, carbon_mgha)) %>%
+  left_join(fvs %>%
+              filter(timestep == 'post_18') %>%
+              select(plot_id, pmort)) %>%
+  mutate(stable_ltc_mgha = carbon_mgha * (1-(pmort / 100)))
+
+```
+
+## Data exploration
+
+```{r}
+sltc_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  mutate(log_sltc_mgha = 
+           log(stable_ltc_mgha+min(stable_ltc_mgha[stable_ltc_mgha>0]))) %>%
+  ggplot(aes(x= stable_ltc_mgha, fill = Treatment))+
+  geom_histogram()+
+  facet_grid(Treatment~.)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+sltc_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  mutate(log_sltc_mgha = 
+           log(stable_ltc_mgha+min(stable_ltc_mgha[stable_ltc_mgha>0]))) %>%
+  ggplot(aes(y= stable_ltc_mgha, fill = Treatment, x = Treatment, color = Treatment))+
+  #geom_boxplot(width = 0.25, alpha = 0.75)+
+  geom_jitter(alpha = 0.5, width = 0.125, height = 0)+
+  geom_violin(width = 0.5, position = position_nudge(0.5), alpha = 0.75)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  scale_color_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')
+
+
+```
+
+
+### Model fitting
+
+```{r}
+
+sltc_fit = 
+  glmmTMB(data = sltc_data,
+          formula = stable_ltc_mgha ~treatment + (1|comp),
+          family = gaussian(),
+          dispformula = ~treatment)
+
+```
+
+### Model validation
+
+```{r}
+plot(simulateResiduals(sltc_fit))
+```
+
+### Model results
+
+```{r}
+summary(sltc_fit)
+
+# apply bonferroni correction
+sltc_results.mean = 
+  summary(sltc_fit)$coefficients$cond %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(sltc_fit)$coefficients$cond),
+         response = 'SLTC 2020',
+         distribution = 'Gaussian',
+         parameter = 'Mean',
+         link = 'Identity',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+sltc_results.disp = 
+  summary(sltc_fit)$coefficients$disp %>%
+  as_tibble() %>%
+  mutate(Effect = rownames(summary(sltc_fit)$coefficients$disp),
+         response = 'SLTC 2020',
+         distribution = 'Gaussian',
+         parameter = 'Resid. var.',
+         link = 'Log',
+         significance = 
+           ifelse(`Pr(>|z|)` <= 0.05/8,
+                  '*',
+                  ''))  %>%
+  select(response, distribution, parameter, link, Effect, Estimate, `Std. Error`,
+         `z value`, `Pr(>|z|)`, significance)
+
+
+sltc_data %>%
+  group_by(treatment) %>%
+  summarise(sltc_mgha.mean = mean(stable_ltc_mgha),
+            sltc_mgha.sd = sd(stable_ltc_mgha)) %>%
+  ungroup()
+
+sltc_results.mean
+sltc_results.disp
+
+```
+
+### Findings
+
+  - Mean (SD) stable live tree carbon on Control plots was 114 (126) Mg C / ha.
+  - All three treatments had higher mean SLTC than Control plots: Mech plots at 145 (76) Mg C / ha, Fire plots at 152 (78) Mg C / ha, and Mech+Fire plots at 119 (66) Mg C / ha. However, no treatment had a statistically significant effect on SLTC relative to the Control. 
+  - All three treatments had statistically significant effects on the dispersion parameter, each reducing the variance across plots within a compartment relative to the Control.
+
+### Figure
+
+```{r fig.height=4.5, fig.width=6.5}
+sltc_figure = 
+  sltc_data %>%
+  left_join(
+    data.frame(treatment = c('control', 'mech', 'burn', 'mechburn'),
+               Treatment = factor(c('Control', 'Mech', 'Fire', 'Mech+Fire'),
+                                  levels = c('Control', 'Mech', 'Fire', 
+                                             'Mech+Fire')))
+  ) %>%
+  mutate(log_sltc_mgha = 
+           log(stable_ltc_mgha+min(stable_ltc_mgha[stable_ltc_mgha>0]))) %>%
+  ggplot(aes(y= stable_ltc_mgha, fill = Treatment, x = Treatment, color = Treatment))+
+  #geom_boxplot(width = 0.25, alpha = 0.75)+
+  geom_jitter(alpha = 0.5, width = 0.125, height = 0)+
+  geom_violin(width = 0.5, position = position_nudge(0.5), alpha = 0.75)+
+  theme_minimal()+
+  scale_fill_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  scale_color_viridis_d(begin = 0.05, end = 0.85, option = 'C')+
+  theme(legend.position = 'none')+
+  labs(y = '2020 stable live tree carbon (Mg C / ha)')
+
+sltc_figure
+
+```
+
+# Writing out figures and tables
+
+Results summary table:
+
+```{r}
+results_aggregated = 
+  net_ba_results.mean %>%
+  bind_rows(net_ba_results.disp) %>%
+  bind_rows(large_trees_results.mean) %>%
+  bind_rows(snags_results.mean) %>%
+  bind_rows(sdi_results.mean) %>%
+  bind_rows(sdi_results.disp) %>%
+  bind_rows(cc_results.mean) %>%
+  bind_rows(cc_results.disp) %>%
+  bind_rows(surface_fuels_results.mean) %>%
+  bind_rows(duff_results.mean) %>%
+  bind_rows(duff_results.disp) %>%
+  bind_rows(ptorch_results.mean) %>%
+  bind_rows(ptorch_results.zi) %>%
+  bind_rows(sltc_results.mean) %>%
+  bind_rows(sltc_results.disp)
+
+results_aggregated %>% print(n = Inf, width = Inf)
+
+write.csv(results_aggregated,
+          here::here('04-communication',
+                     'tables',
+                     'results_aggregated.csv'),
+          row.names = FALSE)
+
+ggsave(growth_and_removals_figure,
+       filename = 
+         here::here('04-communication',
+                    'figures',
+                    'growth_and_removals.png'),
+       height = 4.5, width = 6.5, units = 'in')
+
+
+
+ggsave(large_trees_figure,
+       filename = 
+         here::here('04-communication',
+                    'figures',
+                    'large_trees.png'),
+       height = 6.5, width = 6.5, units = 'in')
+
+
+ggsave(snags_figure,
+       filename = 
+         here::here('04-communication',
+                    'figures',
+                    'snags.png'),
+       height = 6.5, width = 6.5, units = 'in')
+
+
+ggsave(cc_figure_2,
+       filename = 
+         here::here('04-communication',
+                    'figures',
+                    'canopy_cover.png'),
+       height = 4.5, width = 6.5, units = 'in')
+
+
+ggsave(surface_fuels_figure_2,
+       filename = 
+         here::here('04-communication',
+                    'figures',
+                    'surface_fuels.png'),
+       height = 4.5, width = 6.5, units = 'in')
+
+
+ggsave(duff_figure_2,
+       filename = 
+         here::here('04-communication',
+                    'figures',
+                    'duff.png'),
+       height = 4.5, width = 6.5, units = 'in')
+
+
+ggsave(ptorch_figure_2,
+       filename = 
+         here::here('04-communication',
+                    'figures',
+                    'ptorch.png'),
+       height = 4.5, width = 6.5, units = 'in')
+
+
+ggsave(sltc_figure,
+       filename = 
+         here::here('04-communication',
+                    'figures',
+                    'stable_live_tree_carbon.png'),
+       height = 4.5, width = 6.5, units = 'in')
+
+
+
+
+
+```

@@ -1,0 +1,46 @@
+---
+title: "HW 1: Finding Data"
+author: "Liv Hemond"
+format: html
+editor: visual
+---
+
+
+## Load libraries and data
+
+```{r}
+# load libraries ----
+library(tidyverse)
+library(here)
+
+# load data ----
+# stand density index
+sdi_data <- read_csv(here("data", "sdi_data.csv"))
+# stable live tree carbon
+stlc_data <- read_csv(here("data", "sltc_data.csv"))
+```
+
+## Exploration
+
+```{r}
+# set factor levels ----
+sdi_clean <- sdi_data %>% 
+  
+  mutate(treatment = factor(treatment, 
+                            levels = c("control", "mech", "burn", "mechburn")),
+         
+         sdi_zone_long = factor(sdi_zone,
+                                levels = c("<25", "25-35", "35-60", ">60"),
+                                labels = c("free competition", "partial competition",
+                                           "full site occupancy", "imminent mortality")))
+```
+
+```{r}
+# get counts, mean, and sd ----
+sdi_data %>% 
+  group_by(inv_year, treatment) %>% 
+  summarize(count = n(),
+            mean_rel_sdi = mean(rel_sdi),
+            sd_rel_sdi = sd(rel_sdi))
+```
+
