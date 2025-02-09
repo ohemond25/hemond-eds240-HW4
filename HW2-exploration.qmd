@@ -1,0 +1,285 @@
+---
+title: "HW 2: Data Exploration"
+subtitle: "Visualizing forest health impacts of various treatment options"
+author: "Liv Hemond"
+date: 2025-02-04
+format: 
+  html:
+    code-fold: show
+    toc: true
+    embed-resources: true
+editor: visual
+theme: litera
+execute: 
+  eval: true
+  echo: true
+  message: false
+  warning: false
+---
+
+This is a series of exploratory data visualizations using data from Stephens et al. 2023. They capture the results of a long-term ecological research study on the impacts of different fuels treatment and forest restoration strategies in the Sierra Nevada.
+
+The data contains a number of variables that measure vegetation characteristics, fuel amounts, tree stand density index, and the outputs of fire modeling (including the probability of torching and the probability of mortality, which were involved in carbon stock estimations). Alongside this information, there are also variables describing the treatment used, the plot ID number, the year, and whether the data were collected pre- or post-treatment.
+
+The questions I hope to answer through this data visualization are as follows:
+
+-   Broadly, what are the pros and cons to using different forest treatments?
+
+-   Which forest treatments are most effective at reducing fire risk?
+
+    -   **Data:** Surface fuels & ground fuels (aka duff) -- Section A
+
+-   Which are best at protecting forest carbon stocks?
+
+    -   **Data:** Stable live tree carbon (STLC) -- Section B
+
+-   Which are most effective at reducing tree deaths?
+
+    -   **Data:** Stand density index (SDI) -- Section C
+
+-   Which cost the least?
+
+    -   **Data:** Costs (net per ha and per reduction in fire severity) -- Section D
+
+# I. Setup
+
+## i. Load libraries and data
+
+```{r}
+# ..........load libraries.........
+library(tidyverse)
+library(here)
+
+# ..........load data files.........
+# part A: surface fuels and duff
+  # surface fuels
+  fuels_data <- read_csv(here("data", "surface_fuels_data.csv"))
+  # duff
+  duff_data <- read_csv(here("data", "duff_data.csv"))
+
+# part B: stable live tree carbon
+  # stable live tree carbon (STLC)
+  stlc_data <- read_csv(here("data", "sltc_data.csv"))
+  
+# part C: stand density index
+  # stand density index (SDI)
+  sdi_data <- read_csv(here("data", "sdi_data.csv"))  
+```
+
+## ii. Clean and wrangle data
+
+### A. Surface fuels and duff
+
+```{r}
+# join surface fuels and duff
+fuels_duff_clean <- inner_join(fuels_data, duff_data, by = join_by(plot_id, treatment, comp, timestep)) %>% 
+  # pivot to create a column for fuel type and a column for amount (Mg/ha)
+  pivot_longer(cols = surface_mgha:log_duff_mgha,
+               names_to = "fuel_type",
+               values_to = "amount_mgha") %>% 
+  # convert treatment to factor and set levels
+  mutate(treatment = factor(treatment, 
+                            levels = c("control", "mech", "burn", "mechburn")))
+```
+
+### B. Stable live tree carbon
+
+```{r}
+stlc_clean <- stlc_data %>% 
+  # convert treatment to factor and set levels
+  mutate(treatment = factor(treatment, 
+                            levels = c("control", "mech", "burn", "mechburn")))
+```
+
+### C. Stand density index
+
+```{r}
+# stand density index
+sdi_clean <- sdi_data %>% 
+  # convert treatment and sdi_zone (competitive benchmark zones) to factors and set levels
+  mutate(treatment = factor(treatment, 
+                            levels = c("control", "mech", "burn", "mechburn")),
+         sdi_zone_long = factor(sdi_zone,
+                                levels = c("<25", "25-35", "35-60", ">60"),
+                                labels = c("free competition", "partial competition",
+                                           "full site occupancy", "imminent mortality")))
+```
+
+### D. Costs
+
+```{r}
+# have to create my own cost data frame using reported values published by Stephens et al. 2023 
+# (in paper, but not in their data)
+# see tables 2 and 3 in the paper for these values
+treatment <- c("control", "mech", "burn", "mechburn")
+net_cost_haYr <- c(0, -337, 163, -13)
+ptorch_change_pct <- c(26, -20, -15, -36)
+cost_ptorch_change <- c(0, -16, 11, -0.4)
+cost_protected_m2ha <- c(0, -156, 67, -7)
+
+# join together to create data frame
+cost_data <- data.frame(treatment, net_cost_haYr, ptorch_change_pct, cost_ptorch_change, cost_protected_m2ha) %>% 
+             # convert treatment to factor and set levels
+             mutate(treatment = factor(treatment, 
+                                       levels = c("control", "mech", "burn", "mechburn")))
+```
+
+
+# II. Exploratory Visualizations
+
+## i. A. Surface fuels and duff
+
+Compare surface fuel loads and duff (aka ground fuel loads) across treatments.
+
+```{r}
+# boxplot, using facet_wrap to compare 
+fuels_duff_clean %>% 
+  filter(fuel_type %in% c("surface_mgha", "duff_mgha")) %>% 
+  ggplot(aes(x = treatment, y = amount_mgha, fill = fuel_type)) +
+  geom_boxplot(outliers = FALSE) +
+  facet_wrap(~fuel_type) +
+  coord_flip() +
+  scale_fill_manual(values = c("#7C606B", "#BBD686")) +
+  labs(title = "Ground (Duff) and Surface Fuel Loads Across Treatments",
+       subtitle = "Loads are significantly lower in 'Mech+Burn' and 'Burn' plots than 'Control'",
+       y = "Fuel Load (Mg/ha)") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank()
+  )
+```
+
+**TAKEAWAY:** Mech+Burn and Burn significantly reduce both surface and ground fuel loads compared to Control or just Mech. Thus, treatments that involve prescribed fire are better at reducing fuel loads. This decreases overall wildfire risk in those treatment plots compared to Control or Mech.
+
+## ii. B. Stable live tree carbon
+
+Compare stable live tree carbon (that which is expected to survive after a wildfire event) with existing carbon stocks
+
+```{r}
+# first, calculate the mean stlc and mean existing carbon for each treatment type
+stlc_clean %>% 
+  group_by(treatment) %>% 
+  summarize(mean_carbon_mgha = mean(carbon_mgha),
+            mean_stable_ltc_mgha = mean(stable_ltc_mgha)) %>% 
+  # now create dumbbell plot showing the predicted change in carbon
+  ggplot(aes(y = treatment)) +
+  geom_linerange(aes(xmin = mean_stable_ltc_mgha,
+                     xmax = mean_carbon_mgha),
+                 color = "#484848") +
+  # brown = post-fire stable live tree carbon
+  geom_point(aes(x = mean_stable_ltc_mgha),
+             color = "#B2675E", size = 3) +
+  # green = pre-fire live tree carbon
+  geom_point(aes(x = mean_carbon_mgha),
+             color = "#BBD686", size = 3) +
+  labs(title = "Carbon Stocks Before (Green) and After (Brown) a Simulated Fire",
+       subtitle = "Control plots risk losing the greatest amount of carbon from wildfires",
+       x = "Carbon Stocks (Mg/ha)") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_blank()
+  )
+# note: might consider changing the orientation of this plot, or using a slope chart instead of a dumbbell plot (could be easier to visualize arbon losses)
+```
+
+**TAKEAWAY:** While the three treatments had higher average stable live tree carbon than the control, this difference was not statistically significant (as reported by authors). However, when looking at the change between existing carbon stocks (mean values, shown in green on the plot) and modeled stable live tree carbon (mean values, brown), the difference is many times larger for control plots than treatment plots. In effect, control plots have more unstable carbon that they could lose after a wildfire.
+
+## iii. C. Stand density index
+
+Show how plots of different treatments fall into different SDI zones (measure of competition between trees, greater SDI = greater competition and greater chance of mortality)
+
+```{r}
+# option 1: heatmap
+sdi_clean %>%
+  # first, count number of plots in each treatment type and SDI benchmark zone
+  group_by(treatment, sdi_zone_long) %>%
+  summarize(count_treatment_zone = n()) %>%
+  ungroup() %>% 
+  # second, add the counts to get the total number of plots in each treatment type
+  group_by(treatment) %>% 
+  mutate(count_treatment = sum(count_treatment_zone),
+         # third, divide the number of plots per SDI zone by the number of total plots for that treatment to get a %
+         pct_zone_per_treatment = count_treatment_zone/count_treatment) %>% 
+  # create heatmap, with % as the fill aesthetic
+  ggplot(aes(y = treatment, x = sdi_zone_long, fill = pct_zone_per_treatment)) +
+  geom_tile() +
+  scale_fill_gradient(n.breaks = 7) +
+  coord_fixed() +
+  labs(title = "Percent of Plots in Each Treatment that Fall Within Each SDI Benchmark",
+       subtitle = "Almost 75% of control plots face overcrowding and increased mortality risk") +
+  theme_minimal() +
+  theme(axis.title = element_blank())
+```
+
+```{r}
+# option 2: stacked bar chart
+sdi_clean %>%
+  # first, count number of plots in each treatment type and SDI benchmark zone
+  group_by(treatment, sdi_zone_long) %>%
+  summarize(count_treatment_zone = n()) %>%
+  ungroup() %>% 
+  # second, add the counts to get the total number of plots in each treatment type
+  group_by(treatment) %>% 
+  mutate(count_treatment = sum(count_treatment_zone),
+         # third, divide the number of plots per SDI zone by the number of total plots for that treatment to get a %
+         pct_zone_per_treatment = count_treatment_zone/count_treatment) %>% 
+  # reorder so that % in imminent mortality group is visually sorted in ascending order
+  mutate(treatment = factor(treatment,
+                            levels = c("control", "burn", "mech", "mechburn"))) %>% 
+  # create bar chart, with % as the length and SDI benchmark zone as the fill
+  ggplot(aes(x = treatment, y = pct_zone_per_treatment, fill = sdi_zone_long)) +
+  geom_col() +
+  scale_fill_manual(values = c("#BBD686", "#C4A381", "#644536", "#B2675E")) +
+  labs(title = "Percent of Plots in Each Treatment that Fall Within Each SDI Benchmark",
+       subtitle = "Almost 75% of control plots face overcrowding and increased mortality risk") +
+  coord_flip() +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.title.y = element_blank()
+  )
+```
+
+**TAKEAWAY:** Almost 75% of control plots have very high SDIs, meaning they are overcrowded and have a greater risk of mortality (due to nutrient limitations, water limitations, and the potential for pests or disease to spread more quickly). Comparatively, many more plots in the three treatment types fall lower on the SDI benchmarks, between "full site occupancy" and "free competition". This means they are less subject to density-dependent competition and associated ill effects.
+
+## iv. D. Costs
+
+Show the net costs for different treatment options
+
+```{r}
+# bar chart
+cost_data %>% 
+  ggplot(aes(x = treatment, y = net_cost_haYr)) +
+  geom_col(fill = "#B2675E") +
+  geom_hline(yintercept = 0, color = "#C4A381") +
+  labs(title = "Net Annual Cost per Hectare of Treatment Options",
+       subtitle = "'Mech' generates timber revenue, offsetting costs") +
+  theme_minimal()
+# consider switching the direction of y axis so that profits are on top and costs are below
+```
+
+**TAKEAWAY:** Treatments involving mechanical thinning can generate revenue from timber sales, which makes them more economically viable. Prescribed fire remains a high cost option in comparison to the others.
+
+# III. Questions
+
+1.  *What have you learned about your data? Have any potentially interesting patterns emerged?*
+
+    I've noticed that there are tradeoffs between different forest treatment options which have management implications. 
+    
+    For instance, treatments that involve prescribed fire are best at reducing fuel loads and thus decreasing wildfire risk, but they are also more costly. Mechanical thinning alone has the potential to actually turn a profit, but is less effective at reducing fire risk. In terms of carbon sequestration, there isn't a statistically significant difference between post-fire stable tree carbon across treatments. However, there is a large difference in the amount of carbon that could be lost by fire, with control plots in general having much more to lose. Additionally, treatments that involve mechanical thinning seem to be best at reducing forest stand density, likely making trees more resilient to disturbances.
+    
+    All of these factors (cost, carbon sequestration and permanence, fire risk reduction, stand density) would be important for forest managers to consider and weight by level of priority. I would like the focus of my infographic to be highlighting these tradeoffs and showcasing what should be considered when deciding which treatment option to use. 
+
+2.  *In HW #1, you outlined some questions that you wanted to answer using these data. Have you made any strides towards answering those questions? If yes, how so? If no, what next steps do you need to take (e.g. I need to create X plot type, I still need to track down Y data, I need to restructure existing data so that you can visualize it in Z ways, etc.)?*
+
+    I tried to structure my initial exploration specifically to address the questions I'd come up with. I feel that has helped my exploration be more focused and I've been able to answer each of them (except the first, which was a very broad guiding question and something that my infographic as a whole will answer). I've had to combine a couple of the separate data frames together (for instance, surface and ground fuels) and am considering further ways to combine the data (I might try incorporating the fire risk data in with the surface fuels and/or the cost data).
+
+3.  *What challenges do you foresee encountering with your data? These can be data wrangling and / or visualization challenges.*
+
+    One challenge is that many of my datasets only have post-treatment data available, excluding the baseline pre-treatment information. I had originally been thinking of doing some more comparisons of change over time, but I will be more limited in my ability to do so.
+    
+    Another challenge is in presenting the complexity of this information in a way that is consistent and visually easy to understand. For instance, I might color code by forest treatment consistently throughout all my visuals, but then that removes my ability to use color to express any other variables. I think I will need to add a fair amount of annotations and explanations to my plots as well. The information is pretty technical and I'd like this infographic to be accessible even to non-experts.
+    
+    
+    
