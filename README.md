@@ -1,10 +1,12 @@
-# EDS 240 Final Project (HW4)
+# EDS 240 Infographic
 
-Repository for HW4 of EDS 240. This contains all work relating to the final data visualization project for this class.
+Repository for HW4 of EDS 240. This contains all work relating to the final data visualization project for this class, which takes the form of an infographic.
 
 Author: Liv Hemond
 
 Created: January 2025
+
+Last Modified: February 2025
 
 File structure:
 
@@ -15,3 +17,5 @@ File structure:
 -   `HW1-find-data.qmd` contains initial data exploration efforts
 
 -   `HW2-exploration.qmd` contains more in-depth data exploration and preliminary visualization efforts
+
+-   `HW3-drafting-viz.qmd` contains revised visualizations, a hand-drawn representation of my complete infographic, and mock-ups of each different figure I plan to include
