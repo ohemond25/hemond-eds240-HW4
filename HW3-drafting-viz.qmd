@@ -84,6 +84,11 @@ library(tidyverse)
 library(here)
 library(paletteer)
 library(scales)
+library(showtext)
+
+#................enable {showtext} for rendering.................
+showtext_auto()
+showtext_opts(dpi = 300)
 
 # ........set color palette.........
 conifer <- paletteer_d("calecopal::conifer", n = 5)
@@ -351,7 +356,7 @@ Compare stable live tree carbon (that which is expected to survive after a wildf
 #| fig-height: 6
 
 # first, calculate the mean stlc and mean existing carbon for each treatment type
-stlc_clean %>% 
+carbon_plot <- stlc_clean %>% 
   group_by(treatment) %>% 
   summarize(mean_carbon_mgha = mean(carbon_mgha),
             mean_stable_ltc_mgha = mean(stable_ltc_mgha)) %>% 
@@ -432,6 +437,7 @@ stlc_clean %>%
                                 hjust = 0.7,
                                 margin = margin(20, 0, 10, 0))
   )
+carbon_plot
 ```
 
 # Part 7: Reflection Questions
@@ -455,3 +461,5 @@ stlc_clean %>%
     Do the colors in my graphic enhance understanding, or make it more confusing? If confusing, how could I make it more clear?
 
     What is a viewer's current takeaway from my planned infographic? How can I best emphasize the main points using annotations, without overwhelming the viewer with text?
+
+
